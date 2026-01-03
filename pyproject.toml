@@ -54,6 +54,9 @@ dependencies = [
 
     # Web search
     "duckduckgo-search>=4.0.0",
+    
+    # Wake word detection
+    "openwakeword>=0.6.0",
 ]
 
 [project.optional-dependencies]
