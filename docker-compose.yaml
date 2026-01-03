@@ -17,16 +17,20 @@ services:
   livekit:
     image: livekit/livekit-server:latest
     container_name: caal-livekit
-    command: --config /etc/livekit.yaml --node-ip ${CAAL_HOST_IP}
+    command: >
+      --bind 0.0.0.0
+      --port 7880
+      --rtc.tcp_port 7881
+      --rtc.port_range_start 50000
+      --rtc.port_range_end 50100
+      --rtc.use_external_ip false
+      --keys "devkey: secret"
+      --node-ip ${CAAL_HOST_IP}
     ports:
       - "7880:7880"
       - "7881:7881"
       - "7881:7881/udp"
       - "50000-50100:50000-50100/udp"
-    volumes:
-      - ./livekit.yaml:/etc/livekit.yaml:ro
-    environment:
-      - CAAL_HOST_IP=${CAAL_HOST_IP}
     networks:
       - caal-network
     restart: unless-stopped
@@ -34,8 +38,8 @@ services:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880"]
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 15s
 
   # ===========================================================================
   # geminicli2api - Gemini LLM Proxy (uses your Google AI Pro subscription)
@@ -47,10 +51,8 @@ services:
       - "8888:8888"
     environment:
       - GEMINI_AUTH_PASSWORD=${GEMINI_PROXY_PASSWORD:-caal-secret}
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/oauth_creds.json
+      - GEMINI_CREDENTIALS=${GEMINI_CREDENTIALS:-}
       - PORT=8888
-    volumes:
-      - ./credentials/gemini-oauth.json:/app/oauth_creds.json:ro
     networks:
       - caal-network
     restart: unless-stopped
@@ -58,8 +60,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 15s
+      retries: 5
+      start_period: 30s
 
   # ===========================================================================
   # CAAL Agent - Voice Processing Pipeline
@@ -93,7 +95,7 @@ services:
       - PORCUPINE_ACCESS_KEY=${PORCUPINE_ACCESS_KEY:-}
     volumes:
       - caal-memory:/app/data
-      - ./credentials/gcp-service-account.json:/app/credentials/gcp-service-account.json:ro
+      - ${GCP_CREDENTIALS_PATH:-./credentials/gcp-service-account.json}:/app/credentials/gcp-service-account.json:ro
     networks:
       - caal-network
     depends_on:
