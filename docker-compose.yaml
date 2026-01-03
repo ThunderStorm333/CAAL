@@ -77,7 +77,7 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
       - GEMINI_API_URL=http://geminicli2api:8888/v1
       - GEMINI_API_KEY=${GEMINI_PROXY_PASSWORD:-caal-secret}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3-flash}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-service-account.json
       - STT_MODEL=${STT_MODEL:-chirp_2}
       - STT_LANGUAGES=${STT_LANGUAGES:-en-US}
