@@ -44,27 +44,23 @@ FROM base AS runner
 
 WORKDIR /app
 
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash agent
-
 # Copy virtual environment from deps stage
 COPY --from=deps /app/.venv /app/.venv
 
 # Copy application code
-COPY --chown=agent:agent src/ ./src/
-COPY --chown=agent:agent voice_agent.py ./
-COPY --chown=agent:agent prompt/ ./prompt/
+COPY src/ ./src/
+COPY voice_agent.py ./
+COPY prompt/ ./prompt/
+COPY entrypoint.sh ./
 
 # Create directories for credentials and data
-RUN mkdir -p /app/credentials /app/data /app/models && chown -R agent:agent /app/credentials /app/data /app/models
+RUN mkdir -p /app/credentials /app/data /app/models && \
+    chmod +x /app/entrypoint.sh
 
 # Set environment variables
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Switch to non-root user
-USER agent
-
-# Default command - start mode for production
-CMD ["python", "voice_agent.py", "start"]
+# Default command - use entrypoint to handle credentials
+CMD ["/app/entrypoint.sh"]

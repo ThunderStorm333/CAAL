@@ -80,7 +80,7 @@ services:
       - GEMINI_API_URL=http://geminicli2api:8888/v1
       - GEMINI_API_KEY=${GEMINI_PROXY_PASSWORD:-caal-secret}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3-flash}
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-service-account.json
+      - GCP_CREDENTIALS=${GCP_CREDENTIALS:-}
       - STT_MODEL=${STT_MODEL:-chirp_2}
       - STT_LANGUAGES=${STT_LANGUAGES:-en-US}
       - TTS_VOICE=${TTS_VOICE:-en-US-Chirp3-HD-Callirrhoe}
@@ -95,7 +95,6 @@ services:
       - PORCUPINE_ACCESS_KEY=${PORCUPINE_ACCESS_KEY:-}
     volumes:
       - caal-memory:/app/data
-      - ${GCP_CREDENTIALS_PATH:-./credentials/gcp-service-account.json}:/app/credentials/gcp-service-account.json:ro
     networks:
       - caal-network
     depends_on:
