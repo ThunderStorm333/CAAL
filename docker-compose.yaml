@@ -9,13 +9,6 @@
 # Usage:
 #   docker compose up -d
 #   Access: http://<CAAL_HOST_IP>:3000
-#
-# Prerequisites:
-#   1. Copy credentials/gcp-service-account.json.example to credentials/gcp-service-account.json
-#   2. Copy credentials/gemini-oauth.json.example to credentials/gemini-oauth.json
-#   3. Copy .env.example to .env and update values
-#
-# See .env.example for configuration options.
 
 services:
   # ===========================================================================
@@ -26,10 +19,10 @@ services:
     container_name: caal-livekit
     command: --config /etc/livekit.yaml --node-ip ${CAAL_HOST_IP}
     ports:
-      - "7880:7880"       # WebSocket
-      - "7881:7881"       # TCP for WebRTC
-      - "7881:7881/udp"   # UDP for WebRTC
-      - "50000-50100:50000-50100/udp"  # WebRTC media ports
+      - "7880:7880"
+      - "7881:7881"
+      - "7881:7881/udp"
+      - "50000-50100:50000-50100/udp"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     environment:
@@ -47,22 +40,22 @@ services:
   # ===========================================================================
   # geminicli2api - Gemini LLM Proxy (uses your Google AI Pro subscription)
   # ===========================================================================
-  # Exposes OpenAI-compatible API using your Gemini CLI OAuth credentials
   geminicli2api:
-    image: gzzhongqi/geminicli2api:latest
+    build: https://github.com/gzzhongqi/geminicli2api.git
     container_name: caal-geminicli2api
     ports:
       - "8888:8888"
     environment:
       - GEMINI_AUTH_PASSWORD=${GEMINI_PROXY_PASSWORD:-caal-secret}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/oauth_creds.json
+      - PORT=8888
     volumes:
       - ./credentials/gemini-oauth.json:/app/oauth_creds.json:ro
     networks:
       - caal-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8888/v1/models"]
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -75,30 +68,23 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      labels:
-        org.opencontainers.image.source: https://github.com/CoreWorxLab/caal
-        org.opencontainers.image.description: CAAL Voice Assistant Agent (Cloud APIs)
     container_name: caal-agent
     ports:
-      - "8889:8889"  # Webhook server for announcements and tool reload
+      - "8889:8889"
     environment:
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
-      # Gemini LLM via geminicli2api proxy
       - GEMINI_API_URL=http://geminicli2api:8888/v1
       - GEMINI_API_KEY=${GEMINI_PROXY_PASSWORD:-caal-secret}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3-flash}
-      # Google Cloud credentials for STT/TTS
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-service-account.json
       - STT_MODEL=${STT_MODEL:-chirp_2}
       - STT_LANGUAGES=${STT_LANGUAGES:-en-US}
       - TTS_VOICE=${TTS_VOICE:-en-US-Chirp3-HD-Callirrhoe}
       - TTS_MODEL=${TTS_MODEL:-chirp_3}
-      # n8n MCP
       - N8N_MCP_URL=${N8N_MCP_URL:-}
       - N8N_MCP_TOKEN=${N8N_MCP_TOKEN:-}
-      # General
       - TIMEZONE=${TIMEZONE:-America/New_York}
       - TIMEZONE_DISPLAY=${TIMEZONE_DISPLAY:-Eastern Time}
       - MAX_TURNS=${MAX_TURNS:-20}
@@ -107,9 +93,6 @@ services:
       - PORCUPINE_ACCESS_KEY=${PORCUPINE_ACCESS_KEY:-}
     volumes:
       - caal-memory:/app/data
-      - ./settings.json:/app/settings.json  # Runtime settings (created on first save)
-      - ./prompt:/app/prompt  # Prompt files (custom.md is gitignored)
-      - ./mcp_servers.json:/app/mcp_servers.json  # Additional MCP servers (optional)
       - ./credentials/gcp-service-account.json:/app/credentials/gcp-service-account.json:ro
     networks:
       - caal-network
@@ -127,9 +110,6 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      labels:
-        org.opencontainers.image.source: https://github.com/CoreWorxLab/caal
-        org.opencontainers.image.description: CAAL Voice Assistant Frontend
       args:
         - NEXT_PUBLIC_LIVEKIT_URL=${NEXT_PUBLIC_LIVEKIT_URL:-}
         - NEXT_PUBLIC_PORCUPINE_ACCESS_KEY=${PORCUPINE_ACCESS_KEY:-}
@@ -155,16 +135,10 @@ services:
       retries: 3
       start_period: 30s
 
-# =============================================================================
-# Networks
-# =============================================================================
 networks:
   caal-network:
     driver: bridge
 
-# =============================================================================
-# Volumes
-# =============================================================================
 volumes:
   caal-memory:
     name: caal-memory
