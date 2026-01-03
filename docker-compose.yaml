@@ -81,15 +81,30 @@ services:
     container_name: caal-agent
     ports:
       - "8889:8889"  # Webhook server for announcements and tool reload
-    env_file:
-      - ./.env
     environment:
       - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
       # Gemini LLM via geminicli2api proxy
       - GEMINI_API_URL=http://geminicli2api:8888/v1
       - GEMINI_API_KEY=${GEMINI_PROXY_PASSWORD:-caal-secret}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3-flash}
       # Google Cloud credentials for STT/TTS
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-service-account.json
+      - STT_MODEL=${STT_MODEL:-chirp_2}
+      - STT_LANGUAGES=${STT_LANGUAGES:-en-US}
+      - TTS_VOICE=${TTS_VOICE:-en-US-Chirp3-HD-Callirrhoe}
+      - TTS_MODEL=${TTS_MODEL:-chirp_3}
+      # n8n MCP
+      - N8N_MCP_URL=${N8N_MCP_URL:-}
+      - N8N_MCP_TOKEN=${N8N_MCP_TOKEN:-}
+      # General
+      - TIMEZONE=${TIMEZONE:-America/New_York}
+      - TIMEZONE_DISPLAY=${TIMEZONE_DISPLAY:-Eastern Time}
+      - MAX_TURNS=${MAX_TURNS:-20}
+      - TOOL_CACHE_SIZE=${TOOL_CACHE_SIZE:-3}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - PORCUPINE_ACCESS_KEY=${PORCUPINE_ACCESS_KEY:-}
     volumes:
       - caal-memory:/app/data
       - ./settings.json:/app/settings.json  # Runtime settings (created on first save)
