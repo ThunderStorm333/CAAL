@@ -31,11 +31,11 @@ FROM base AS deps
 WORKDIR /app
 
 # Copy files needed for dependency installation
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-# Create virtual environment and install dependencies (non-editable)
-RUN uv sync --frozen --no-dev --no-editable
+# Create virtual environment and install dependencies (without lockfile for fresh deps)
+RUN uv sync --no-dev --no-editable
 
 # ============================================================================
 # Production image
