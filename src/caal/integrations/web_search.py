@@ -1,8 +1,8 @@
-"""Web search tool with DuckDuckGo + Ollama summarization.
+"""Web search tool with DuckDuckGo + Gemini summarization.
 
 Provides a voice-friendly web search capability that:
 1. Searches DuckDuckGo (free, no API key)
-2. Summarizes results with Ollama for concise voice output
+2. Summarizes results with Gemini for concise voice output
 3. Returns 1-3 sentence answers instead of raw search results
 
 Usage:
@@ -12,9 +12,10 @@ Usage:
 
 import asyncio
 import logging
+import os
 from typing import Any
 
-import ollama
+import httpx
 from livekit.agents import function_tool
 
 logger = logging.getLogger(__name__)
@@ -32,10 +33,10 @@ Summary:"""
 
 
 class WebSearchTools:
-    """Mixin providing web search via DuckDuckGo with Ollama summarization.
+    """Mixin providing web search via DuckDuckGo with Gemini summarization.
 
     Requires the parent class to have:
-    - self.llm: OllamaLLM instance (for model access)
+    - self.llm: GeminiLLM instance (for model/base_url/api_key access)
 
     Configuration (override in subclass if needed):
     - _search_max_results: int = 5
@@ -95,9 +96,9 @@ class WebSearchTools:
         query: str,
         results: list[dict[str, Any]]
     ) -> str:
-        """Summarize search results with Ollama for voice-friendly output."""
+        """Summarize search results with Gemini for voice-friendly output."""
 
-        # Truncate to avoid exceeding context limits (~500 tokens total)
+        # Truncate to avoid exceeding context limits
         formatted = []
         for i, r in enumerate(results, 1):
             title = r.get("title", "")[:100]
@@ -107,19 +108,34 @@ class WebSearchTools:
         results_text = "\n".join(formatted)
         prompt = SUMMARIZE_PROMPT.format(query=query, results=results_text)
 
-        # Use agent's model for summarization
-        model = getattr(self.llm, "model", "qwen3:8b")
+        # Get API config from agent's LLM
+        base_url = getattr(self.llm, "base_url", os.getenv("GEMINI_API_URL", "http://localhost:8888/v1"))
+        api_key = getattr(self.llm, "api_key", os.getenv("GEMINI_API_KEY", "caal-secret"))
+        model = getattr(self.llm, "model", os.getenv("GEMINI_MODEL", "gemini-3-flash"))
 
         try:
-            response = await asyncio.to_thread(
-                ollama.chat,
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.3},  # Low temp for factual output
-                stream=False,
-            )
-            summary = response.get("message", {}).get("content", "").strip()
-            return summary or "I found some results but couldn't summarize them."
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.3,  # Low temp for factual output
+                        "stream": False,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("choices") and len(data["choices"]) > 0:
+                    summary = data["choices"][0].get("message", {}).get("content", "").strip()
+                    return summary or "I found some results but couldn't summarize them."
+                
+                return "I found some results but couldn't summarize them."
 
         except Exception as e:
             logger.error(f"Summarization error: {e}")

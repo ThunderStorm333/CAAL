@@ -1,13 +1,19 @@
-# CAAL Voice Framework - Docker Compose Stack
-# ============================================
+# CAAL Voice Framework - Docker Compose Stack (Cloud APIs Version)
+# ================================================================
 #
-# LAN Mode (default):
+# This version uses cloud APIs instead of local GPU services:
+# - Google Cloud STT (Speech-to-Text)
+# - Google Cloud TTS (Text-to-Speech)  
+# - Gemini LLM via geminicli2api proxy (uses your Google AI Pro subscription)
+#
+# Usage:
 #   docker compose up -d
 #   Access: http://<CAAL_HOST_IP>:3000
 #
-# HTTPS Mode (Tailscale or mkcert):
-#   docker compose --profile https up -d
-#   Access: https://<HTTPS_DOMAIN>
+# Prerequisites:
+#   1. Copy credentials/gcp-service-account.json.example to credentials/gcp-service-account.json
+#   2. Copy credentials/gemini-oauth.json.example to credentials/gemini-oauth.json
+#   3. Copy .env.example to .env and update values
 #
 # See .env.example for configuration options.
 
@@ -15,35 +21,18 @@ services:
   # ===========================================================================
   # LiveKit Server - WebRTC Infrastructure
   # ===========================================================================
-  # Auto-detects mode: if HTTPS_DOMAIN is set, enables TURN/TLS
   livekit:
     image: livekit/livekit-server:latest
     container_name: caal-livekit
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        if [ -n "$${HTTPS_DOMAIN}" ]; then
-          echo "HTTPS mode: enabling TURN/TLS for $${HTTPS_DOMAIN}"
-          apk add --no-cache gettext > /dev/null 2>&1
-          envsubst < /etc/livekit.yaml.template > /etc/livekit.yaml
-        else
-          echo "LAN mode: using basic config"
-          cp /etc/livekit-lan.yaml /etc/livekit.yaml
-        fi
-        exec /livekit-server --config /etc/livekit.yaml --node-ip $${CAAL_HOST_IP}
+    command: --config /etc/livekit.yaml --node-ip ${CAAL_HOST_IP}
     ports:
       - "7880:7880"       # WebSocket
       - "7881:7881"       # TCP for WebRTC
       - "7881:7881/udp"   # UDP for WebRTC
-      - "5349:5349"       # TURN/TLS (only used in Tailscale mode)
-      - "30000-30100:30000-30100/udp"  # TURN relay ports
       - "50000-50100:50000-50100/udp"  # WebRTC media ports
     volumes:
-      - ./livekit.yaml:/etc/livekit-lan.yaml:ro
-      - ./livekit-tailscale.yaml.template:/etc/livekit.yaml.template:ro
-      - ./certs:/etc/livekit/certs:ro
+      - ./livekit.yaml:/etc/livekit.yaml:ro
     environment:
-      - HTTPS_DOMAIN=${HTTPS_DOMAIN:-}
       - CAAL_HOST_IP=${CAAL_HOST_IP}
     networks:
       - caal-network
@@ -56,6 +45,30 @@ services:
       start_period: 10s
 
   # ===========================================================================
+  # geminicli2api - Gemini LLM Proxy (uses your Google AI Pro subscription)
+  # ===========================================================================
+  # Exposes OpenAI-compatible API using your Gemini CLI OAuth credentials
+  geminicli2api:
+    image: gzzhongqi/geminicli2api:latest
+    container_name: caal-geminicli2api
+    ports:
+      - "8888:8888"
+    environment:
+      - GEMINI_AUTH_PASSWORD=${GEMINI_PROXY_PASSWORD:-caal-secret}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/oauth_creds.json
+    volumes:
+      - ./credentials/gemini-oauth.json:/app/oauth_creds.json:ro
+    networks:
+      - caal-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/v1/models"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ===========================================================================
   # CAAL Agent - Voice Processing Pipeline
   # ===========================================================================
   agent:
@@ -64,88 +77,33 @@ services:
       dockerfile: Dockerfile
       labels:
         org.opencontainers.image.source: https://github.com/CoreWorxLab/caal
-        org.opencontainers.image.description: CAAL Voice Assistant Agent
+        org.opencontainers.image.description: CAAL Voice Assistant Agent (Cloud APIs)
     container_name: caal-agent
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "8889:8889"  # Webhook server for announcements and tool reload
     env_file:
       - ./.env
     environment:
       - LIVEKIT_URL=ws://livekit:7880
-      - SPEACHES_URL=http://speaches:8000
-      - KOKORO_URL=http://kokoro:8880
+      # Gemini LLM via geminicli2api proxy
+      - GEMINI_API_URL=http://geminicli2api:8888/v1
+      - GEMINI_API_KEY=${GEMINI_PROXY_PASSWORD:-caal-secret}
+      # Google Cloud credentials for STT/TTS
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-service-account.json
     volumes:
       - caal-memory:/app/data
-      - caal-config:/app/config  # Runtime config (settings.json, mcp_servers.json)
+      - ./settings.json:/app/settings.json  # Runtime settings (created on first save)
       - ./prompt:/app/prompt  # Prompt files (custom.md is gitignored)
+      - ./mcp_servers.json:/app/mcp_servers.json  # Additional MCP servers (optional)
+      - ./credentials/gcp-service-account.json:/app/credentials/gcp-service-account.json:ro
     networks:
       - caal-network
     depends_on:
       livekit:
         condition: service_healthy
-      speaches:
-        condition: service_healthy
-      kokoro:
+      geminicli2api:
         condition: service_healthy
     restart: unless-stopped
-
-  # ===========================================================================
-  # Speaches - STT (Faster-Whisper)
-  # ===========================================================================
-  speaches:
-    image: ghcr.io/speaches-ai/speaches:latest-cuda-12.6.3
-    container_name: caal-speaches
-    ports:
-      - "${SPEACHES_PORT:-8000}:8000"
-    volumes:
-      - speaches-cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
-    networks:
-      - caal-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-
-  # ===========================================================================
-  # Kokoro - TTS (remsky/kokoro-fastapi)
-  # ===========================================================================
-  # Using v0.2.4-master for RTX 50 series (Blackwell/sm_120) GPU support
-  # See: https://github.com/remsky/Kokoro-FastAPI/releases/tag/v0.2.4-master
-  kokoro:
-    image: ghcr.io/remsky/kokoro-fastapi-gpu:v0.2.4-master
-    container_name: caal-kokoro
-    ports:
-      - "${KOKORO_PORT:-8880}:8880"
-    volumes:
-      - kokoro-cache:/root/.cache
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
-    networks:
-      - caal-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   # ===========================================================================
   # Frontend - Next.js Web Interface
@@ -158,7 +116,7 @@ services:
         org.opencontainers.image.source: https://github.com/CoreWorxLab/caal
         org.opencontainers.image.description: CAAL Voice Assistant Frontend
       args:
-        - NEXT_PUBLIC_LIVEKIT_URL=${HTTPS_DOMAIN:+wss://${HTTPS_DOMAIN}:7443}
+        - NEXT_PUBLIC_LIVEKIT_URL=${NEXT_PUBLIC_LIVEKIT_URL:-}
         - NEXT_PUBLIC_PORCUPINE_ACCESS_KEY=${PORCUPINE_ACCESS_KEY:-}
     container_name: caal-frontend
     ports:
@@ -167,7 +125,7 @@ services:
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
-      - NEXT_PUBLIC_LIVEKIT_URL=${HTTPS_DOMAIN:+wss://${HTTPS_DOMAIN}:7443}
+      - NEXT_PUBLIC_LIVEKIT_URL=${NEXT_PUBLIC_LIVEKIT_URL:-}
       - WEBHOOK_URL=http://agent:8889
     networks:
       - caal-network
@@ -182,27 +140,6 @@ services:
       retries: 3
       start_period: 30s
 
-  # ===========================================================================
-  # nginx - HTTPS Reverse Proxy (mkcert or Tailscale certs)
-  # ===========================================================================
-  nginx:
-    image: nginx:alpine
-    container_name: caal-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-      - "7443:7443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro
-    networks:
-      - caal-network
-    depends_on:
-      - frontend
-    restart: unless-stopped
-    profiles:
-      - https
-
 # =============================================================================
 # Networks
 # =============================================================================
@@ -216,9 +153,3 @@ networks:
 volumes:
   caal-memory:
     name: caal-memory
-  caal-config:
-    name: caal-config
-  speaches-cache:
-    name: caal-speaches-cache
-  kokoro-cache:
-    name: caal-kokoro-cache

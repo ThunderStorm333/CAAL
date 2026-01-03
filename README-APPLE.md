@@ -1,4 +1,10 @@
-# CAAL on Apple Silicon (M1/M2/M3/M4)
+> **Note**: This document describes the legacy **local GPU setup** for Apple Silicon using mlx-audio and Ollama. The current version of CAAL uses **cloud APIs** (Google Cloud STT/TTS + Gemini) which work on all platforms including Apple Silicon without any special configuration. See the main [README.md](README.md) for cloud setup.
+>
+> Use this guide only if you prefer fully local processing with no cloud dependencies.
+
+---
+
+# CAAL on Apple Silicon (M1/M2/M3/M4) - Local Setup
 
 This guide covers running CAAL on Apple Silicon Macs using Metal-accelerated STT/TTS via [mlx-audio](https://github.com/Blaizzy/mlx-audio).
 

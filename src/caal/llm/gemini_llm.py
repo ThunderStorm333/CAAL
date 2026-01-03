@@ -1,26 +1,26 @@
 """
-OllamaLLM Plugin for LiveKit Agents
+GeminiLLM Plugin for LiveKit Agents
 ====================================
 
-Native Ollama LLM integration with think parameter support for Qwen3 models.
+OpenAI-compatible LLM integration for Gemini via geminicli2api proxy.
 
-This plugin provides an LLM interface that satisfies LiveKit's requirements
-while allowing the VoiceAssistant's llm_node override to handle actual
-LLM calls with MCP tool integration.
+This plugin provides an LLM interface that uses the geminicli2api proxy
+to access Gemini models using your Google AI Pro subscription via OAuth.
 
 Features:
-    - Supports Qwen3's think parameter for low-latency responses
+    - Uses geminicli2api proxy (OpenAI-compatible API)
+    - Supports Gemini 3 Flash for low-latency voice responses
     - Configuration accessible via properties for llm_node override
-    - Minimal implementation - llm_node does the real work
+    - Works with Google AI Pro subscription (no API key costs)
 
 Example:
-    >>> from caal import OllamaLLM
+    >>> from caal import GeminiLLM
     >>> from livekit.agents import AgentSession
     >>>
-    >>> llm = OllamaLLM(
-    ...     model="qwen3:8b",
-    ...     think=False,  # Disable thinking for lower latency
-    ...     temperature=0.7,
+    >>> llm = GeminiLLM(
+    ...     model="gemini-3-flash",
+    ...     base_url="http://geminicli2api:8888/v1",
+    ...     api_key="your-proxy-password",
     ... )
     >>>
     >>> session = AgentSession(stt=..., llm=llm, tts=...)
@@ -37,58 +37,54 @@ from livekit.agents.llm import ChatContext, ChatChunk, ChoiceDelta
 from livekit.agents.llm.tool_context import FunctionTool, RawFunctionTool
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions, NOT_GIVEN, NotGivenOr
 
-__all__ = ["OllamaLLM"]
+__all__ = ["GeminiLLM"]
 
 logger = logging.getLogger(__name__)
 
 
-class OllamaLLM(llm.LLM):
+class GeminiLLM(llm.LLM):
     """
-    LiveKit LLM plugin for Ollama with think parameter support.
+    LiveKit LLM plugin for Gemini via geminicli2api proxy.
 
     This plugin is designed to be used with a VoiceAssistant that overrides
-    the llm_node method. The actual LLM calls are handled by ollama_llm_node(),
+    the llm_node method. The actual LLM calls are handled by gemini_llm_node(),
     which supports MCP tool discovery and execution.
 
-    The OllamaLLM class:
+    The GeminiLLM class:
     1. Satisfies LiveKit's llm.LLM interface (prevents "no LLM" errors)
     2. Stores configuration accessible via properties
     3. Provides model/provider info for logging and metrics
 
     Args:
-        model: Ollama model name (e.g., "qwen3:8b", "llama3.2:3b")
-        think: Enable Qwen3 thinking mode. False for lower latency.
+        model: Gemini model name (e.g., "gemini-3-flash", "gemini-3-pro")
+        base_url: geminicli2api proxy URL (e.g., "http://geminicli2api:8888/v1")
+        api_key: Proxy password (matches GEMINI_AUTH_PASSWORD)
         temperature: Sampling temperature (0.0-2.0)
-        top_p: Nucleus sampling threshold (0.0-1.0)
-        top_k: Top-k sampling limit
-        base_url: Ollama server URL
 
     Example:
-        >>> llm = OllamaLLM(model="qwen3:8b", think=False)
+        >>> llm = GeminiLLM(
+        ...     model="gemini-3-flash",
+        ...     base_url="http://geminicli2api:8888/v1",
+        ...     api_key="caal-secret",
+        ... )
         >>> session = AgentSession(llm=llm, ...)
     """
 
     def __init__(
         self,
         *,
-        model: str = "qwen3:8b",
-        think: bool = False,
+        model: str = "gemini-3-flash",
+        base_url: str = "http://localhost:8888/v1",
+        api_key: str = "caal-secret",
         temperature: float = 0.7,
-        top_p: float = 0.8,
-        top_k: int = 20,
-        num_ctx: int = 8192,
-        base_url: str = "http://localhost:11434",
     ) -> None:
         super().__init__()
         self._model = model
-        self._think = think
-        self._temperature = temperature
-        self._top_p = top_p
-        self._top_k = top_k
-        self._num_ctx = num_ctx
         self._base_url = base_url
+        self._api_key = api_key
+        self._temperature = temperature
 
-        logger.debug(f"OllamaLLM initialized: {model} (think={think}, num_ctx={num_ctx})")
+        logger.debug(f"GeminiLLM initialized: {model} @ {base_url}")
 
     # === Required LLM interface properties ===
 
@@ -100,39 +96,24 @@ class OllamaLLM(llm.LLM):
     @property
     def provider(self) -> str:
         """Provider name for logging and metrics."""
-        return "ollama"
+        return "gemini"
 
     # === Configuration accessors for llm_node ===
 
     @property
-    def think(self) -> bool:
-        """Whether to use Qwen3 thinking mode."""
-        return self._think
+    def base_url(self) -> str:
+        """geminicli2api proxy URL."""
+        return self._base_url
+
+    @property
+    def api_key(self) -> str:
+        """Proxy password."""
+        return self._api_key
 
     @property
     def temperature(self) -> float:
         """Sampling temperature."""
         return self._temperature
-
-    @property
-    def top_p(self) -> float:
-        """Nucleus sampling threshold."""
-        return self._top_p
-
-    @property
-    def top_k(self) -> int:
-        """Top-k sampling limit."""
-        return self._top_k
-
-    @property
-    def num_ctx(self) -> int:
-        """Context window size."""
-        return self._num_ctx
-
-    @property
-    def base_url(self) -> str:
-        """Ollama server URL."""
-        return self._base_url
 
     # === Required LLM interface method ===
 
@@ -150,11 +131,11 @@ class OllamaLLM(llm.LLM):
         Create an LLM stream for chat completion.
 
         Note: When using VoiceAssistant with llm_node override, this method
-        is bypassed. The llm_node override calls ollama_llm_node() directly.
+        is bypassed. The llm_node override calls gemini_llm_node() directly.
 
         This implementation exists for interface compliance and fallback.
         """
-        return _OllamaLLMStream(
+        return _GeminiLLMStream(
             llm=self,
             chat_ctx=chat_ctx,
             tools=tools or [],
@@ -162,11 +143,11 @@ class OllamaLLM(llm.LLM):
         )
 
     async def aclose(self) -> None:
-        """Cleanup (no-op for Ollama)."""
+        """Cleanup (no-op for stateless proxy client)."""
         pass
 
 
-class _OllamaLLMStream(llm.LLMStream):
+class _GeminiLLMStream(llm.LLMStream):
     """
     Minimal LLMStream implementation for interface compliance.
 
@@ -176,21 +157,21 @@ class _OllamaLLMStream(llm.LLMStream):
 
     def __init__(
         self,
-        llm: OllamaLLM,
+        llm: GeminiLLM,
         *,
         chat_ctx: ChatContext,
         tools: list[FunctionTool | RawFunctionTool],
         conn_options: APIConnectOptions,
     ) -> None:
         super().__init__(llm, chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
-        self._ollama_llm = llm
+        self._gemini_llm = llm
 
     async def _run(self) -> None:
         """
         Minimal implementation that emits an empty response.
 
         This method is typically never called because VoiceAssistant's
-        llm_node override handles all LLM interactions via ollama_llm_node().
+        llm_node override handles all LLM interactions via gemini_llm_node().
 
         If this is called unexpectedly, it emits a placeholder response
         to prevent crashes.
@@ -200,7 +181,7 @@ class _OllamaLLMStream(llm.LLMStream):
         # Emit a minimal response for interface compliance
         # In normal operation, llm_node override prevents this from running
         logger.warning(
-            "OllamaLLM._run() called directly - this usually means llm_node "
+            "GeminiLLM._run() called directly - this usually means llm_node "
             "override is not active. Using fallback response."
         )
 

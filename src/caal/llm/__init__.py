@@ -1,8 +1,8 @@
 """
-LLM handling with Ollama direct integration.
+LLM handling with Gemini via geminicli2api proxy.
 """
 
-from .ollama_llm import OllamaLLM
-from .ollama_node import OllamaLLMNode, ToolDataCache, ollama_llm_node
+from .gemini_llm import GeminiLLM
+from .gemini_node import ToolDataCache, gemini_llm_node
 
-__all__ = ["OllamaLLM", "OllamaLLMNode", "ToolDataCache", "ollama_llm_node"]
+__all__ = ["GeminiLLM", "ToolDataCache", "gemini_llm_node"]

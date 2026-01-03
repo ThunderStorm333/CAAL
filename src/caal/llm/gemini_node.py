@@ -1,10 +1,10 @@
-"""Simplified Ollama LLM Node with think parameter support.
+"""Gemini LLM Node with OpenAI-compatible API via geminicli2api.
 
-This module provides a custom llm_node implementation that bypasses LiveKit's
-LLM wrapper to enable direct Ollama calls with the `think` parameter.
+This module provides a custom llm_node implementation that uses the geminicli2api
+proxy to access Gemini models via an OpenAI-compatible API.
 
 Key Features:
-- Direct Ollama API calls with think=False for lower latency (Qwen3)
+- Uses geminicli2api proxy (OpenAI-compatible /v1/chat/completions)
 - Tool discovery from @function_tool methods and MCP servers
 - Tool execution routing (agent methods, n8n workflows, MCP tools)
 - Streaming responses for best UX
@@ -12,8 +12,8 @@ Key Features:
 Usage:
     class MyAgent(Agent):
         async def llm_node(self, chat_ctx, tools, model_settings):
-            async for chunk in ollama_llm_node(
-                self, chat_ctx, model="qwen3:8b", think=False
+            async for chunk in gemini_llm_node(
+                self, chat_ctx, model="gemini-3-flash"
             ):
                 yield chunk
 """
@@ -25,7 +25,7 @@ import time
 from collections.abc import AsyncIterable
 from typing import Any
 
-import ollama
+import httpx
 
 from ..utils.formatting import strip_markdown_for_tts
 from ..integrations.n8n import execute_n8n_workflow
@@ -66,58 +66,27 @@ class ToolDataCache:
         self._cache.clear()
 
 
-class OllamaLLMNode:
-    """Encapsulates Ollama LLM configuration and tool handling."""
-
-    def __init__(
-        self,
-        model: str = "qwen3:8b",
-        think: bool = False,
-        temperature: float = 0.7,
-        top_p: float = 0.8,
-        top_k: int = 20,
-    ):
-        self.model = model
-        self.think = think
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self._tools_cache: list[dict] | None = None
-
-    def _get_ollama_options(self) -> dict:
-        """Get Ollama options dict."""
-        return {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
-        }
-
-
-async def ollama_llm_node(
+async def gemini_llm_node(
     agent,
     chat_ctx,
-    model: str = "qwen3:8b",
-    think: bool = False,
+    model: str = "gemini-3-flash",
+    base_url: str = "http://localhost:8888/v1",
+    api_key: str = "caal-secret",
     temperature: float = 0.7,
-    top_p: float = 0.8,
-    top_k: int = 20,
-    num_ctx: int = 8192,
     tool_data_cache: ToolDataCache | None = None,
     max_turns: int = 20,
 ) -> AsyncIterable[str]:
-    """Custom LLM node using Ollama directly with think parameter support.
+    """Custom LLM node using Gemini via geminicli2api proxy.
 
     This function should be called from an Agent's llm_node method override.
 
     Args:
         agent: The Agent instance (self)
         chat_ctx: Chat context from LiveKit
-        model: Ollama model name
-        think: Enable thinking mode (False for lower latency with Qwen3)
+        model: Gemini model name (e.g., "gemini-3-flash")
+        base_url: geminicli2api proxy URL
+        api_key: Proxy password (GEMINI_AUTH_PASSWORD)
         temperature: Sampling temperature
-        top_p: Nucleus sampling threshold
-        top_k: Top-k sampling limit
-        num_ctx: Context window size
         tool_data_cache: Cache for structured tool response data
         max_turns: Max conversation turns to keep in sliding window
 
@@ -127,16 +96,9 @@ async def ollama_llm_node(
     Example:
         class MyAgent(Agent):
             async def llm_node(self, chat_ctx, tools, model_settings):
-                async for chunk in ollama_llm_node(self, chat_ctx, think=False):
+                async for chunk in gemini_llm_node(self, chat_ctx):
                     yield chunk
     """
-    options = {
-        "temperature": temperature,
-        "top_p": top_p,
-        "top_k": top_k,
-        "num_ctx": num_ctx,
-    }
-
     try:
         # Build messages from chat context with sliding window
         messages = _build_messages_from_context(
@@ -146,87 +108,125 @@ async def ollama_llm_node(
         )
 
         # Discover tools from agent and MCP servers
-        ollama_tools = await _discover_tools(agent)
+        openai_tools = await _discover_tools(agent)
 
-        # If tools available, check for tool calls first (non-streaming)
-        if ollama_tools:
-            response = ollama.chat(
-                model=model,
-                messages=messages,
-                tools=ollama_tools,
-                think=think,
-                stream=False,
-                options=options,
-            )
+        # Create HTTP client for API calls
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
 
-            if hasattr(response, "message"):
-                # Check for tool calls
-                if hasattr(response.message, "tool_calls") and response.message.tool_calls:
-                    tool_calls = response.message.tool_calls
-                    logger.info(f"Ollama returned {len(tool_calls)} tool call(s)")
+            # If tools available, check for tool calls first (non-streaming)
+            if openai_tools:
+                request_body = {
+                    "model": model,
+                    "messages": messages,
+                    "tools": openai_tools,
+                    "temperature": temperature,
+                    "stream": False,
+                }
 
-                    # Track tool usage for frontend indicator
-                    tool_names = [tc.function.name for tc in tool_calls]
-                    tool_params = [tc.function.arguments for tc in tool_calls]
+                response = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=request_body,
+                )
+                response.raise_for_status()
+                data = response.json()
 
-                    # Publish tool status immediately (bullshit detector!)
-                    if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
-                        import asyncio
-                        asyncio.create_task(agent._on_tool_status(True, tool_names, tool_params))
+                if data.get("choices") and len(data["choices"]) > 0:
+                    choice = data["choices"][0]
+                    message = choice.get("message", {})
 
-                    # Execute tools and get results (cache structured data)
-                    messages = await _execute_tool_calls(
-                        agent, messages, tool_calls, response.message,
-                        tool_data_cache=tool_data_cache,
-                    )
+                    # Check for tool calls
+                    if message.get("tool_calls"):
+                        tool_calls = message["tool_calls"]
+                        logger.info(f"Gemini returned {len(tool_calls)} tool call(s)")
 
-                    # Stream follow-up response with tool results
-                    followup = ollama.chat(
-                        model=model,
-                        messages=messages,
-                        think=think,
-                        stream=True,
-                        options=options,
-                    )
+                        # Track tool usage for frontend indicator
+                        tool_names = [tc["function"]["name"] for tc in tool_calls]
+                        tool_params = [tc["function"].get("arguments", {}) for tc in tool_calls]
 
-                    for chunk in followup:
-                        if hasattr(chunk, "message") and hasattr(chunk.message, "content"):
-                            if chunk.message.content:
-                                yield strip_markdown_for_tts(chunk.message.content)
-                    return
+                        # Publish tool status immediately
+                        if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
+                            import asyncio
+                            asyncio.create_task(agent._on_tool_status(True, tool_names, tool_params))
 
-                # No tool calls - return content directly
-                elif hasattr(response.message, "content") and response.message.content:
-                    # Publish no-tool status immediately
-                    if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
-                        import asyncio
-                        asyncio.create_task(agent._on_tool_status(False, [], []))
-                    yield strip_markdown_for_tts(response.message.content)
-                    return
+                        # Execute tools and get results
+                        messages = await _execute_tool_calls(
+                            agent, messages, tool_calls, message,
+                            tool_data_cache=tool_data_cache,
+                        )
 
-        # No tools or no tool calls - stream directly
-        # Publish no-tool status immediately
-        if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
-            import asyncio
-            asyncio.create_task(agent._on_tool_status(False, [], []))
+                        # Stream follow-up response with tool results
+                        async for chunk in _stream_response(
+                            client, headers, base_url, model, messages, temperature
+                        ):
+                            yield chunk
+                        return
 
-        response_stream = ollama.chat(
-            model=model,
-            messages=messages,
-            tools=None,
-            think=think,
-            stream=True,
-            options=options,
-        )
+                    # No tool calls - return content directly
+                    elif message.get("content"):
+                        # Publish no-tool status
+                        if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
+                            import asyncio
+                            asyncio.create_task(agent._on_tool_status(False, [], []))
+                        yield strip_markdown_for_tts(message["content"])
+                        return
 
-        for chunk in response_stream:
-            if hasattr(chunk, "message") and hasattr(chunk.message, "content"):
-                if chunk.message.content:
-                    yield strip_markdown_for_tts(chunk.message.content)
+            # No tools or no tool calls - stream directly
+            if hasattr(agent, "_on_tool_status") and agent._on_tool_status:
+                import asyncio
+                asyncio.create_task(agent._on_tool_status(False, [], []))
+
+            async for chunk in _stream_response(
+                client, headers, base_url, model, messages, temperature
+            ):
+                yield chunk
 
     except Exception as e:
-        logger.error(f"Error in ollama_llm_node: {e}", exc_info=True)
+        logger.error(f"Error in gemini_llm_node: {e}", exc_info=True)
         yield f"I encountered an error: {e}"
+
+
+async def _stream_response(
+    client: httpx.AsyncClient,
+    headers: dict,
+    base_url: str,
+    model: str,
+    messages: list[dict],
+    temperature: float,
+) -> AsyncIterable[str]:
+    """Stream a response from the API."""
+    request_body = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+
+    async with client.stream(
+        "POST",
+        f"{base_url}/chat/completions",
+        headers=headers,
+        json=request_body,
+    ) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if line.startswith("data: "):
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    data = json.loads(data_str)
+                    if data.get("choices") and len(data["choices"]) > 0:
+                        delta = data["choices"][0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield strip_markdown_for_tts(content)
+                except json.JSONDecodeError:
+                    continue
 
 
 def _build_messages_from_context(
@@ -234,7 +234,7 @@ def _build_messages_from_context(
     tool_data_cache: ToolDataCache | None = None,
     max_turns: int = 20,
 ) -> list[dict]:
-    """Build Ollama messages with sliding window and tool data context.
+    """Build OpenAI-format messages with sliding window and tool data context.
 
     Message order:
     1. System prompt (always first, never trimmed)
@@ -262,12 +262,13 @@ def _build_messages_from_context(
             try:
                 chat_messages.append({
                     "role": "assistant",
-                    "content": "",
+                    "content": None,
                     "tool_calls": [{
                         "id": item.id,
+                        "type": "function",
                         "function": {
                             "name": item.name,
-                            "arguments": getattr(item, "arguments", {}) or {},
+                            "arguments": json.dumps(getattr(item, "arguments", {}) or {}),
                         },
                     }],
                 })
@@ -297,7 +298,6 @@ def _build_messages_from_context(
             messages.append({"role": "system", "content": context})
 
     # 3. Apply sliding window to chat history
-    # max_turns * 2 accounts for user + assistant pairs
     max_messages = max_turns * 2
     if len(chat_messages) > max_messages:
         trimmed = len(chat_messages) - max_messages
@@ -315,10 +315,10 @@ async def _discover_tools(agent) -> list[dict] | None:
     redundant MCP API calls on every user utterance.
     """
     # Return cached tools if available
-    if hasattr(agent, "_ollama_tools_cache") and agent._ollama_tools_cache is not None:
-        return agent._ollama_tools_cache
+    if hasattr(agent, "_gemini_tools_cache") and agent._gemini_tools_cache is not None:
+        return agent._gemini_tools_cache
 
-    ollama_tools = []
+    openai_tools = []
 
     # Get @function_tool decorated methods from agent
     if hasattr(agent, "_tools") and agent._tools:
@@ -348,7 +348,7 @@ async def _discover_tools(agent) -> list[dict] | None:
                     if param.default == inspect.Parameter.empty and param_name != "self":
                         required.append(param_name)
 
-                ollama_tools.append({
+                openai_tools.append({
                     "type": "function",
                     "function": {
                         "name": name,
@@ -362,35 +362,32 @@ async def _discover_tools(agent) -> list[dict] | None:
                 })
 
     # Get MCP tools from all configured servers (except n8n)
-    # n8n uses webhook-based workflow discovery, not direct MCP tools
     if hasattr(agent, "_caal_mcp_servers") and agent._caal_mcp_servers:
         for server_name, server in agent._caal_mcp_servers.items():
-            # Skip n8n - it uses workflow discovery via _n8n_workflow_tools
             if server_name == "n8n":
                 continue
 
             mcp_tools = await _get_mcp_tools(server)
-            # Prefix tools with server name to avoid collisions
             for tool in mcp_tools:
                 original_name = tool["function"]["name"]
                 tool["function"]["name"] = f"{server_name}__{original_name}"
-            ollama_tools.extend(mcp_tools)
+            openai_tools.extend(mcp_tools)
             if mcp_tools:
                 logger.info(f"Added {len(mcp_tools)} tools from MCP server: {server_name}")
 
-    # Add n8n workflow tools (webhook-based execution, separate from MCP)
+    # Add n8n workflow tools
     if hasattr(agent, "_n8n_workflow_tools") and agent._n8n_workflow_tools:
-        ollama_tools.extend(agent._n8n_workflow_tools)
+        openai_tools.extend(agent._n8n_workflow_tools)
 
     # Cache tools on agent and return
-    result = ollama_tools if ollama_tools else None
-    agent._ollama_tools_cache = result
+    result = openai_tools if openai_tools else None
+    agent._gemini_tools_cache = result
 
     return result
 
 
 async def _get_mcp_tools(mcp_server) -> list[dict]:
-    """Get tools from an MCP server in Ollama format."""
+    """Get tools from an MCP server in OpenAI format."""
     tools = []
 
     if not mcp_server or not hasattr(mcp_server, "_client") or not mcp_server._client:
@@ -400,7 +397,6 @@ async def _get_mcp_tools(mcp_server) -> list[dict]:
         tools_result = await mcp_server._client.list_tools()
         if hasattr(tools_result, "tools"):
             for mcp_tool in tools_result.tools:
-                # Convert MCP schema to Ollama format
                 parameters = {"type": "object", "properties": {}, "required": []}
                 if hasattr(mcp_tool, "inputSchema") and mcp_tool.inputSchema:
                     schema = mcp_tool.inputSchema
@@ -432,42 +428,34 @@ async def _get_mcp_tools(mcp_server) -> list[dict]:
 async def _execute_tool_calls(
     agent,
     messages: list[dict],
-    tool_calls: list,
-    response_message: Any,
+    tool_calls: list[dict],
+    response_message: dict,
     tool_data_cache: ToolDataCache | None = None,
 ) -> list[dict]:
-    """Execute tool calls and append results to messages.
-
-    Args:
-        agent: The agent instance
-        messages: Current message list to append to
-        tool_calls: List of tool calls from LLM response
-        response_message: The original LLM response message
-        tool_data_cache: Optional cache to store structured tool response data
-    """
+    """Execute tool calls and append results to messages."""
 
     # Add assistant message with tool calls
     tool_call_message = {
         "role": "assistant",
-        "content": getattr(response_message, "content", "") or "",
-        "tool_calls": [],
+        "content": response_message.get("content") or None,
+        "tool_calls": tool_calls,
     }
-
-    for tool_call in tool_calls:
-        tool_call_message["tool_calls"].append({
-            "id": getattr(tool_call, "id", ""),
-            "function": {
-                "name": tool_call.function.name,
-                "arguments": tool_call.function.arguments or {},
-            },
-        })
-
     messages.append(tool_call_message)
 
     # Execute each tool
     for tool_call in tool_calls:
-        tool_name = tool_call.function.name
-        arguments = tool_call.function.arguments or {}
+        tool_name = tool_call["function"]["name"]
+        arguments_str = tool_call["function"].get("arguments", "{}")
+        
+        # Parse arguments (could be string or dict)
+        if isinstance(arguments_str, str):
+            try:
+                arguments = json.loads(arguments_str)
+            except json.JSONDecodeError:
+                arguments = {}
+        else:
+            arguments = arguments_str
+
         logger.info(f"Executing tool: {tool_name} with args: {arguments}")
 
         try:
@@ -475,15 +463,14 @@ async def _execute_tool_calls(
 
             # Cache structured data if present
             if tool_data_cache and isinstance(tool_result, dict):
-                # Look for common data fields, otherwise cache the whole result
                 data = tool_result.get("data") or tool_result.get("results") or tool_result
                 tool_data_cache.add(tool_name, data)
                 logger.debug(f"Cached tool data for {tool_name}")
 
             messages.append({
                 "role": "tool",
-                "content": str(tool_result),
-                "tool_call_id": getattr(tool_call, "id", None),
+                "content": json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+                "tool_call_id": tool_call.get("id"),
             })
         except Exception as e:
             error_msg = f"Error executing tool {tool_name}: {e}"
@@ -491,7 +478,7 @@ async def _execute_tool_calls(
             messages.append({
                 "role": "tool",
                 "content": error_msg,
-                "tool_call_id": getattr(tool_call, "id", None),
+                "tool_call_id": tool_call.get("id"),
             })
 
     return messages
@@ -528,12 +515,9 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
 
     # Check MCP servers (with multi-server routing)
     if hasattr(agent, "_caal_mcp_servers") and agent._caal_mcp_servers:
-        # Parse server name from prefixed tool name
-        # Format: server_name__actual_tool (double underscore separator)
         if "__" in tool_name:
             server_name, actual_tool = tool_name.split("__", 1)
         else:
-            # Unprefixed tools default to n8n server
             server_name, actual_tool = "n8n", tool_name
 
         if server_name in agent._caal_mcp_servers:
@@ -546,11 +530,7 @@ async def _execute_single_tool(agent, tool_name: str, arguments: dict) -> Any:
 
 
 async def _call_mcp_tool(mcp_server, tool_name: str, arguments: dict) -> Any | None:
-    """Call a tool on an MCP server.
-
-    Calls the tool directly without checking if it exists first - the MCP
-    server will return an error if the tool doesn't exist.
-    """
+    """Call a tool on an MCP server."""
     if not mcp_server or not hasattr(mcp_server, "_client"):
         return None
 
@@ -558,7 +538,6 @@ async def _call_mcp_tool(mcp_server, tool_name: str, arguments: dict) -> Any | N
         logger.info(f"Calling MCP tool: {tool_name}")
         result = await mcp_server._client.call_tool(tool_name, arguments)
 
-        # Check for errors
         if result.isError:
             text_contents = []
             for content in result.content:
@@ -568,7 +547,6 @@ async def _call_mcp_tool(mcp_server, tool_name: str, arguments: dict) -> Any | N
             logger.error(error_msg)
             return error_msg
 
-        # Extract text content
         text_contents = []
         for content in result.content:
             if hasattr(content, "text") and content.text:

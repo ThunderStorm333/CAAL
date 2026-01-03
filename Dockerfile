@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1
 
-# CAAL - Voice Agent
-# Lightweight Python agent for voice orchestration (GPU handled by Speaches)
+# CAAL - Voice Agent (Cloud APIs Version)
+# ========================================
+# Lightweight Python agent for voice orchestration using cloud APIs:
+# - Google Cloud STT/TTS
+# - Gemini LLM via geminicli2api proxy
 
 # ============================================================================
-# Base image - slim Python (agent doesn't need GPU, Speaches handles that)
+# Base image - slim Python (no GPU needed, using cloud APIs)
 # ============================================================================
 FROM python:3.11-slim-bookworm AS base
 
@@ -15,7 +18,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
-    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast dependency management
@@ -52,28 +54,25 @@ COPY --from=deps /app/.venv /app/.venv
 COPY --chown=agent:agent src/ ./src/
 COPY --chown=agent:agent voice_agent.py ./
 COPY --chown=agent:agent prompt/ ./prompt/
+
+# Create directories for credentials and data
+RUN mkdir -p /app/credentials /app/data && chown -R agent:agent /app/credentials /app/data
+
+# Copy OpenWakeWord models if they exist
 COPY --chown=agent:agent models/ ./models/
-COPY --chown=agent:agent settings.default.json mcp_servers.default.json ./
-COPY --chown=agent:agent entrypoint.sh ./
 
 # Copy OpenWakeWord resource models to the package location
-# These are required for the melspectrogram and embedding preprocessors
 RUN mkdir -p /app/.venv/lib/python3.11/site-packages/openwakeword/resources/models && \
     cp /app/models/melspectrogram.onnx /app/models/embedding_model.onnx \
-    /app/.venv/lib/python3.11/site-packages/openwakeword/resources/models/
+    /app/.venv/lib/python3.11/site-packages/openwakeword/resources/models/ 2>/dev/null || true
 
 # Set environment variables
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Pre-download Silero VAD model (optional, reduces first-run delay)
-# RUN python -c "from livekit.plugins import silero; silero.VAD.load()"
-
-# Use entrypoint to create config files from defaults if missing
-# Runs as root initially to set up config, then drops to agent user
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Switch to non-root user
+USER agent
 
 # Default command - start mode for production
-# Override with 'dev' for development
 CMD ["python", "voice_agent.py", "start"]

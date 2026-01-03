@@ -4,13 +4,14 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![LiveKit](https://img.shields.io/badge/LiveKit-Agents-purple.svg)](https://docs.livekit.io/agents/)
 
-**Local voice assistant that learns new abilities via auto-discovered n8n workflows exposed as tools via MCP**
+**Voice assistant that learns new abilities via auto-discovered n8n workflows exposed as tools via MCP**
 
-Built on [LiveKit Agents](https://docs.livekit.io/agents/) with fully local STT/TTS/LLM using [Speaches](https://github.com/speaches-ai/speaches) (Faster-Whisper STT), [Kokoro](https://github.com/remsky/Kokoro-FastAPI) (TTS), and [Ollama](https://ollama.ai/).
+Built on [LiveKit Agents](https://docs.livekit.io/agents/) with cloud STT/TTS/LLM using [Google Cloud Speech](https://cloud.google.com/speech-to-text), [Google Cloud TTS](https://cloud.google.com/text-to-speech), and [Gemini](https://ai.google.dev/) (via [geminicli2api](https://github.com/gzzhongqi/geminicli2api)).
 
 ## Features
 
-- **Local Voice Pipeline**: Speaches (Faster-Whisper STT) + Kokoro (TTS) + Ollama LLM
+- **Cloud Voice Pipeline**: Google Cloud STT (Chirp 2) + Google Cloud TTS (Chirp 3 HD) + Gemini LLM
+- **Free LLM Access**: Uses your Google AI Pro subscription via OAuth (no per-request API costs)
 - **Wake Word Detection**: "Hey Cal" activation via Picovoice Porcupine
 - **n8n Integrations**: Home Assistant, APIs, databases - anything n8n can connect to
 - **Web Search**: DuckDuckGo integration for real-time information
@@ -24,7 +25,14 @@ Built on [LiveKit Agents](https://docs.livekit.io/agents/) with fully local STT/
 git clone https://github.com/CoreWorxLab/caal.git
 cd caal
 cp .env.example .env
-nano .env  # Set CAAL_HOST_IP, OLLAMA_HOST, N8N_MCP_URL, N8N_MCP_TOKEN
+
+# Set up credentials (see Credentials Setup below)
+mkdir -p credentials
+cp /path/to/your/gcp-service-account.json credentials/gcp-service-account.json
+cp ~/.gemini/oauth_creds.json credentials/gemini-oauth.json
+
+# Edit configuration
+nano .env  # Set CAAL_HOST_IP, N8N_MCP_URL, N8N_MCP_TOKEN
 
 # Deploy
 docker compose up -d
@@ -32,13 +40,59 @@ docker compose up -d
 
 Open `http://YOUR_SERVER_IP:3000` from any device on your network.
 
-**Requirements (NVIDIA GPU):**
-- Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-- [Ollama](https://ollama.ai/) running on your network
+**Requirements:**
+- Docker (no GPU needed)
+- Google Cloud project with Speech-to-Text and Text-to-Speech APIs enabled
+- Google AI Pro subscription (for Gemini via geminicli2api)
 - [n8n](https://n8n.io/) with MCP enabled (Settings > MCP Access)
-- 12GB+ VRAM recommended
 
-**Apple Silicon?** See [Apple Silicon Setup](#apple-silicon-m1m2m3m4) below.
+## Credentials Setup
+
+CAAL requires two credential files in the `credentials/` directory.
+
+### Google Cloud Service Account
+
+Used for Speech-to-Text and Text-to-Speech APIs.
+
+1. **Create a Google Cloud project** at [console.cloud.google.com](https://console.cloud.google.com)
+
+2. **Enable APIs**:
+   - Go to APIs & Services > Enable APIs
+   - Enable "Cloud Speech-to-Text API"
+   - Enable "Cloud Text-to-Speech API"
+
+3. **Create a service account**:
+   - Go to IAM & Admin > Service Accounts
+   - Click "Create Service Account"
+   - Name it (e.g., "caal-voice")
+   - Grant roles: "Cloud Speech Client" and "Cloud Text-to-Speech Client"
+
+4. **Download the key**:
+   - Click on the service account
+   - Go to Keys > Add Key > Create new key > JSON
+   - Download and save as `credentials/gcp-service-account.json`
+
+### Gemini OAuth (for geminicli2api)
+
+Used to access Gemini LLM via your Google AI Pro subscription.
+
+1. **Subscribe to Google AI Pro** at [ai.google.dev](https://ai.google.dev/)
+
+2. **Install gemini-cli**:
+   ```bash
+   pip install gemini-cli
+   ```
+
+3. **Authenticate**:
+   ```bash
+   gemini auth login
+   ```
+   This opens a browser for Google OAuth. After authenticating, credentials are saved to `~/.gemini/oauth_creds.json`.
+
+4. **Copy to project**:
+   ```bash
+   cp ~/.gemini/oauth_creds.json credentials/gemini-oauth.json
+   ```
 
 ## Network Modes
 
@@ -70,9 +124,6 @@ Full voice from any device on your LAN using locally-trusted certificates:
 
 **1. Install mkcert and generate certs:**
 ```bash
-# Install mkcert (Arch/Manjaro)
-sudo pacman -S mkcert
-
 # Install mkcert (Ubuntu/Debian)
 sudo apt install mkcert
 
@@ -155,17 +206,6 @@ docker compose --profile https up -d
 https://your-machine.tailnet.ts.net
 ```
 
-## Apple Silicon (M1/M2/M3/M4)
-
-CAAL runs on Apple Silicon Macs using [mlx-audio](https://github.com/Blaizzy/mlx-audio) for Metal-accelerated STT/TTS.
-
-**See [README-APPLE.md](README-APPLE.md) for full setup instructions.**
-
-Quick start:
-```bash
-./start-apple.sh
-```
-
 ## Architecture
 
 ```
@@ -173,30 +213,29 @@ Quick start:
 │  Docker Compose Stack                                                 │
 │                                                                       │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐       │
-│  │  Frontend  │  │  LiveKit   │  │  Speaches  │  │   Kokoro   │       │
-│  │  (Next.js) │  │   Server   │  │ (STT, GPU) │  │ (TTS, GPU) │       │
-│  │   :3000    │  │   :7880    │  │   :8000    │  │   :8880    │       │
+│  │  Frontend  │  │  LiveKit   │  │ geminicli  │  │   Agent    │       │
+│  │  (Next.js) │  │   Server   │  │   2api     │  │   (CAAL)   │       │
+│  │   :3000    │  │   :7880    │  │   :8888    │  │   :8889    │       │
 │  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘       │
 │        │               │               │               │              │
-│        │               └───────────────┼───────────────┘              │
-│        └───────────────────────┐       │                              │
-│                                │       │                              │
-│                          ┌─────┴───────┴─────┐                        │
-│                          │       Agent       │                        │
-│                          │  (Voice Pipeline) │                        │
-│                          │  :8889 (webhooks) │                        │
-│                          └─────────┬─────────┘                        │
+│        └───────────────┴───────────────┴───────────────┘              │
 │                                    │                                  │
 └────────────────────────────────────┼──────────────────────────────────┘
                                      │
                    ┌─────────────────┼─────────────────┐
                    │                 │                 │
              ┌─────┴─────┐     ┌─────┴─────┐     ┌─────┴─────┐
-             │  Ollama   │     │    n8n    │     │   Your    │
-             │   (LLM)   │     │ Workflows │     │   APIs    │
+             │  Google   │     │    n8n    │     │   Your    │
+             │   Cloud   │     │ Workflows │     │   APIs    │
              └───────────┘     └───────────┘     └───────────┘
-                    External Services (on your network)
+                    External Services (Cloud + Your Network)
 ```
+
+**Services:**
+- **Frontend**: Next.js web interface for voice interaction
+- **LiveKit**: WebRTC server for real-time audio streaming
+- **geminicli2api**: Proxy that exposes Gemini via OpenAI-compatible API
+- **Agent**: Python voice pipeline connecting STT → LLM → TTS
 
 ## Configuration
 
@@ -205,16 +244,38 @@ Quick start:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CAAL_HOST_IP` | Your server's LAN IP (required for WebRTC) | - |
-| `N8N_MCP_URL` | n8n MCP server URL (required) | - |
+| `GEMINI_PROXY_PASSWORD` | Password for geminicli2api proxy | `caal-secret` |
+| `GEMINI_MODEL` | Gemini model name | `gemini-3-flash` |
+| `STT_MODEL` | Google Cloud STT model | `chirp_2` |
+| `STT_LANGUAGES` | Languages to recognize (comma-separated) | `en-US` |
+| `TTS_VOICE` | Google Cloud TTS voice | `en-US-Chirp3-HD-Callirrhoe` |
+| `TTS_MODEL` | Google Cloud TTS model | `chirp_3` |
+| `N8N_MCP_URL` | n8n MCP server URL | - |
+| `N8N_MCP_TOKEN` | n8n MCP access token | - |
 | `LIVEKIT_URL` | LiveKit server URL | `ws://localhost:7880` |
-| `SPEACHES_URL` | Speaches STT server URL | `http://localhost:8000` |
-| `KOKORO_URL` | Kokoro TTS server URL | `http://localhost:8880` |
-| `WHISPER_MODEL` | Faster-Whisper model | `Systran/faster-whisper-medium` |
-| `TTS_VOICE` | Kokoro voice name | `am_puck` |
-| `OLLAMA_HOST` | Ollama server URL | `http://localhost:11434` |
-| `OLLAMA_MODEL` | LLM model name | `ministral-3:8b` |
-| `OLLAMA_THINK` | Enable thinking mode (slower) | `false` |
 | `PORCUPINE_ACCESS_KEY` | Picovoice key for wake word | - |
+| `TIMEZONE` | IANA timezone ID | `America/Los_Angeles` |
+
+### Gemini Models
+
+Available models via geminicli2api (see [geminicli2api docs](https://github.com/gzzhongqi/geminicli2api)):
+
+| Model | Description |
+|-------|-------------|
+| `gemini-3-flash` | Fast, low-latency (recommended for voice) |
+| `gemini-3-pro` | More capable, slower |
+| `gemini-2.5-pro` | Previous generation |
+
+Suffixes: `-search` (grounded), `-maxthinking`, `-nothinking`
+
+### Google Cloud TTS Voices
+
+See [Google Cloud TTS voices](https://cloud.google.com/text-to-speech/docs/voices) for full list.
+
+Recommended Chirp 3 HD voices:
+- `en-US-Chirp3-HD-Callirrhoe` (female)
+- `en-US-Chirp3-HD-Charon` (male)
+- `en-US-Chirp3-HD-Kore` (female)
 
 ## n8n Workflow Integration
 
@@ -246,6 +307,7 @@ python setup.py  # Creates all workflows in n8n
 | `calendar_get_events` | "What's on my calendar today?" |
 | `hass_control` | "Turn on the office lamp" |
 | `radarr_search_movies` | "Do I have any Batman movies?" |
+| `n8n_create_caal_tool` | "Create a tool that..." (self-extending!) |
 
 See `n8n-workflows/README.md` for full documentation.
 
@@ -314,8 +376,11 @@ See `mobile/README.md` for full documentation.
 # Install dependencies
 uv sync
 
-# Start infrastructure (LiveKit + Speaches + Kokoro)
-docker compose up -d livekit speaches kokoro
+# Start infrastructure (LiveKit + geminicli2api)
+docker compose up -d livekit geminicli2api
+
+# Set up credentials for local development
+export GOOGLE_APPLICATION_CREDENTIALS=./credentials/gcp-service-account.json
 
 # Run agent locally
 uv run voice_agent.py dev
@@ -338,6 +403,9 @@ caal/
 ├── voice_agent.py              # Main entry point
 ├── .env                        # Environment variables
 ├── docker-compose.yaml         # Docker deployment
+├── credentials/                # API credentials (gitignored)
+│   ├── gcp-service-account.json
+│   └── gemini-oauth.json
 ├── prompt/
 │   └── default.md              # System prompt template
 ├── frontend/                   # Next.js web interface
@@ -353,12 +421,53 @@ caal/
 │   └── *.json                  # Workflow definitions
 └── src/caal/
     ├── integrations/           # n8n MCP, web search
-    ├── llm/                    # Ollama with think parameter
+    ├── llm/                    # Gemini LLM integration
     ├── webhooks.py             # HTTP API endpoints
     └── utils/                  # Formatting helpers
 ```
 
 ## Troubleshooting
+
+### Google Cloud Authentication Failed
+
+**Symptom**: Agent logs show "Could not automatically determine credentials"
+
+1. **Check credentials file exists**:
+   ```bash
+   ls -la credentials/gcp-service-account.json
+   ```
+
+2. **Verify file permissions**:
+   ```bash
+   chmod 600 credentials/gcp-service-account.json
+   ```
+
+3. **Test credentials locally**:
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS=./credentials/gcp-service-account.json
+   gcloud auth application-default print-access-token
+   ```
+
+### geminicli2api Not Responding
+
+**Symptom**: Agent logs show connection errors to port 8888
+
+1. **Check container is running**:
+   ```bash
+   docker compose logs geminicli2api
+   ```
+
+2. **Verify OAuth credentials**:
+   ```bash
+   ls -la credentials/gemini-oauth.json
+   ```
+
+3. **Re-authenticate if expired**:
+   ```bash
+   gemini auth login
+   cp ~/.gemini/oauth_creds.json credentials/gemini-oauth.json
+   docker compose restart geminicli2api
+   ```
 
 ### WebRTC Not Connecting
 
@@ -387,45 +496,8 @@ caal/
 # Check agent logs
 docker compose logs -f agent
 
-# Verify Speaches (STT) is healthy
-curl http://localhost:8000/health
-
-# Verify Kokoro (TTS) is healthy
-curl http://localhost:8880/health
-
-# Verify Ollama is reachable
-curl http://YOUR_OLLAMA_IP:11434/api/tags
-```
-
-### Ollama Connection Failed
-
-**Symptom**: Agent logs show "error connecting to Ollama"
-
-Ollama defaults to localhost only. Start it with network binding:
-
-```bash
-OLLAMA_HOST=0.0.0.0 ollama serve
-```
-
-Or set in your shell profile:
-```bash
-export OLLAMA_HOST=0.0.0.0
-```
-
-### Frontend Connection Timeout
-
-**Symptom**: Frontend times out waiting for agent, especially on first connection
-
-Ollama unloads models after 5 minutes by default. On slower drives (HDD), reloading takes too long.
-
-**Option 1** - Keep model loaded:
-```bash
-OLLAMA_HOST=0.0.0.0 OLLAMA_KEEP_ALIVE=24h ollama serve
-```
-
-**Option 2** - Pre-load model before connecting:
-```bash
-ollama run qwen3:8b  # or your configured model
+# Verify all services are healthy
+docker compose ps
 ```
 
 ### n8n Tools Not Loading
@@ -433,13 +505,6 @@ ollama run qwen3:8b  # or your configured model
 1. Verify `N8N_MCP_URL` and `N8N_MCP_TOKEN` in `.env`
 2. Check n8n has MCP enabled (Settings > MCP Access)
 3. Ensure workflows have webhook triggers and are active
-
-### First Start Is Slow
-
-Normal - models download on first run (~2-5 minutes). Watch with:
-```bash
-docker compose logs -f speaches kokoro
-```
 
 ## Production Hardening
 
@@ -460,21 +525,18 @@ For HTTPS, see [Network Modes](#network-modes). Options:
 
 Both use the same `--profile https` and nginx for TLS termination.
 
-## Known Issues
+### Credential Security
 
-1. **No Streaming STT**: Faster-Whisper uses batch processing (waits for speech to end). This is a fundamental limitation of Whisper-based solutions.
-
-2. **Wake Word Models**: The Python `.ppn` models don't work in browser - you need the Web (WASM) version from Picovoice.
-
-3. **RTX 50 Series (Blackwell) Support**: Kokoro TTS requires `v0.2.4-master` or later for RTX 5080/5090 (sm_120) support. This is already configured in `docker-compose.yaml`.
+- Never commit `credentials/` directory (already in `.gitignore`)
+- Rotate GCP service account keys periodically
+- Gemini OAuth tokens refresh automatically but may need re-authentication after 7 days
 
 ## Related Projects
 
 - [LiveKit Agents](https://github.com/livekit/agents) - Voice agent framework
-- [Speaches](https://github.com/speaches-ai/speaches) - Faster-Whisper STT server (NVIDIA GPU)
-- [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) - Kokoro TTS server (NVIDIA GPU)
-- [mlx-audio](https://github.com/Blaizzy/mlx-audio) - STT/TTS for Apple Silicon (Metal)
-- [Ollama](https://ollama.ai/) - Local LLM server
+- [geminicli2api](https://github.com/gzzhongqi/geminicli2api) - Gemini to OpenAI API proxy
+- [Google Cloud Speech-to-Text](https://cloud.google.com/speech-to-text) - STT API
+- [Google Cloud Text-to-Speech](https://cloud.google.com/text-to-speech) - TTS API
 - [n8n](https://n8n.io/) - Workflow automation
 - [Picovoice Porcupine](https://picovoice.ai/platform/porcupine/) - Wake word engine
 
