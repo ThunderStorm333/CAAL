@@ -56,15 +56,7 @@ COPY --chown=agent:agent voice_agent.py ./
 COPY --chown=agent:agent prompt/ ./prompt/
 
 # Create directories for credentials and data
-RUN mkdir -p /app/credentials /app/data && chown -R agent:agent /app/credentials /app/data
-
-# Copy OpenWakeWord models if they exist
-COPY --chown=agent:agent models/ ./models/
-
-# Copy OpenWakeWord resource models to the package location
-RUN mkdir -p /app/.venv/lib/python3.11/site-packages/openwakeword/resources/models && \
-    cp /app/models/melspectrogram.onnx /app/models/embedding_model.onnx \
-    /app/.venv/lib/python3.11/site-packages/openwakeword/resources/models/ 2>/dev/null || true
+RUN mkdir -p /app/credentials /app/data /app/models && chown -R agent:agent /app/credentials /app/data /app/models
 
 # Set environment variables
 ENV PATH="/app/.venv/bin:$PATH"
