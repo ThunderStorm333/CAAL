@@ -30,7 +30,8 @@ services:
           port_range_start: 50000
           port_range_end: 50100
           ips:
-            - ${CAAL_HOST_IP}
+            includes:
+              - ${CAAL_HOST_IP}/32
     ports:
       - "7880:7880"
       - "7881:7881"
