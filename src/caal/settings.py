@@ -31,7 +31,7 @@ PROMPT_DIR = Path(os.getenv("CAAL_PROMPT_DIR", _SCRIPT_DIR / "prompt"))
 
 DEFAULT_SETTINGS = {
     "agent_name": "Cal",
-    "tts_voice": "am_puck",
+    "tts_voice": "en-US-Standard-A",
     "prompt": "default",  # "default" or "custom"
     "wake_greetings": [
         "Hey, what's up?",
@@ -43,7 +43,7 @@ DEFAULT_SETTINGS = {
         "What's up?",
     ],
     "temperature": 0.7,
-    "model": "ministral-3:8b",
+    "model": "gemini-3-flash-preview",
     "num_ctx": 8192,
     "max_turns": 20,
     "tool_cache_size": 3,

@@ -109,17 +109,18 @@ from caal import settings as settings_module
 def get_runtime_settings() -> dict:
     """Get runtime-configurable settings.
 
-    These can be changed via the settings UI without rebuilding.
-    Falls back to .env values for backwards compatibility.
+    Priority: Environment variables > settings.json > defaults
+    Env vars take priority to allow Docker/Portainer configuration.
     """
     settings = settings_module.load_settings()
 
     return {
-        "tts_voice": settings.get("tts_voice") or TTS_VOICE,
-        "model": settings.get("model") or GEMINI_MODEL,
-        "temperature": settings.get("temperature", float(os.getenv("LLM_TEMPERATURE", "0.7"))),
-        "max_turns": settings.get("max_turns", int(os.getenv("MAX_TURNS", "20"))),
-        "tool_cache_size": settings.get("tool_cache_size", int(os.getenv("TOOL_CACHE_SIZE", "3"))),
+        # Env vars take priority over settings.json
+        "tts_voice": TTS_VOICE if os.getenv("TTS_VOICE") else settings.get("tts_voice", TTS_VOICE),
+        "model": GEMINI_MODEL if os.getenv("GEMINI_MODEL") else settings.get("model", GEMINI_MODEL),
+        "temperature": float(os.getenv("LLM_TEMPERATURE", "0")) or settings.get("temperature", 0.7),
+        "max_turns": int(os.getenv("MAX_TURNS", "0")) or settings.get("max_turns", 20),
+        "tool_cache_size": int(os.getenv("TOOL_CACHE_SIZE", "0")) or settings.get("tool_cache_size", 3),
     }
 
 
