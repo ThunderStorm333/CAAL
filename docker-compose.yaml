@@ -17,16 +17,9 @@ services:
   livekit:
     image: livekit/livekit-server:latest
     container_name: caal-livekit
-    command: >
-      --bind 0.0.0.0
-      --port 7880
-      --rtc.tcp_port 7881
-      --rtc.port_range_start 50000
-      --rtc.port_range_end 50100
-      --rtc.use_external_ip false
-      --rtc.ips ${CAAL_HOST_IP}
-      --keys "devkey: secret"
-      --node-ip ${CAAL_HOST_IP}
+    command: --config /etc/livekit.yaml --node-ip ${CAAL_HOST_IP}
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:
       - "7880:7880"
       - "7881:7881"
