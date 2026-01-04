@@ -133,6 +133,47 @@ def load_prompt() -> str:
 
 
 # =============================================================================
+# Safe STT Wrapper (Bug Fix)
+# =============================================================================
+
+class SafeGoogleSTT(google.STT):
+    """Wrapper around Google STT to handle known plugin bugs."""
+    
+    def stream(self, input_data, *args, **kwargs):
+        return self._safe_stream(input_data, *args, **kwargs)
+
+    async def _safe_stream(self, input_data, *args, **kwargs):
+        """Safely stream audio to Google STT, recovering from IndexError bugs."""
+        retry_count = 0
+        while True:
+            try:
+                stream = super().stream(input_data, *args, **kwargs)
+                async for event in stream:
+                    yield event
+                    retry_count = 0  # Reset on success
+                
+                # If stream finishes normally, we are done
+                break
+            
+            except IndexError:
+                # Catch specific Google STT plugin bug: "IndexError: list index out of range"
+                # when results list is empty
+                if retry_count % 10 == 0:
+                    logger.warning("SafeGoogleSTT: Caught known IndexError (empty results) - restarting stream")
+                
+                await asyncio.sleep(0.1)
+                retry_count += 1
+                
+                # Only fail if it spirals out of control
+                if retry_count > 100:
+                    logger.error("SafeGoogleSTT: Too many consecutive IndexErrors, giving up")
+                    raise
+            except Exception:
+                # Other errors should propagate
+                raise
+
+
+# =============================================================================
 # Agent Definition
 # =============================================================================
 
@@ -246,8 +287,8 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     logger.info(f"  MCP: {list(mcp_servers.keys()) or 'None'}")
     logger.info("=" * 60)
 
-    # Build STT - Google Cloud with optional wake word
-    base_stt = google.STT(
+    # Build STT - Google Cloud with optional wake word and Safe Wrapper
+    base_stt = SafeGoogleSTT(
         model=STT_MODEL,
         languages=STT_LANGUAGES,
         credentials_file=GCP_CREDENTIALS_FILE,
