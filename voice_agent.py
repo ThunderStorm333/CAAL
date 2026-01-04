@@ -326,7 +326,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         tts=google.TTS(
             model_name=TTS_MODEL,
             voice_name=runtime["tts_voice"],
+            language="en-US",
             credentials_file=GCP_CREDENTIALS_FILE,
+            use_streaming=False,  # Streaming has decoder bug with Chirp3-HD
         ),
         vad=silero.VAD.load(),
         allow_interruptions=False,
