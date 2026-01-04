@@ -24,6 +24,7 @@ services:
       --rtc.port_range_start 50000
       --rtc.port_range_end 50100
       --rtc.use_external_ip false
+      --rtc.ips ${CAAL_HOST_IP}
       --keys "devkey: secret"
       --node-ip ${CAAL_HOST_IP}
     ports:
